@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 pub struct FileWatcher {
     hash_collection: HashMap<String, String>,
+    content_collection: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -24,6 +25,7 @@ impl FileWatcher {
     pub fn new() -> Self {
         FileWatcher {
             hash_collection: HashMap::new(),
+            content_collection: HashMap::new(),
         }
     }
 
@@ -81,15 +83,24 @@ impl FileWatcher {
         }
         //calculate hte current hash, cehck in hashmap for a stored key-value pair
         let current_hash = self.calculate_currrent_hash(path)?;
+        let new_content = read_to_string(path)?;
+
+        let binding = String::from("Content not found");
+        let prev_content = self.content_collection.get(path).unwrap_or(&binding);
+
         match self.hash_collection.get(path) {
             Some(stored_hash) => {
                 //evaluate hte store-hash with the calculated current hash
                 if stored_hash == &current_hash {
                     Ok(FileStatus::NoChange)
                 } else {
+                    //check  old content  vs new content
+                    self.compare_content(prev_content, &new_content)?;
                     if let Some(value) = self.hash_collection.get_mut(path) {
                         *value = current_hash
                     }
+                    //check for content
+                    //new content and previous from the collection
                     Ok(FileStatus::Modified)
                 }
             }
@@ -97,9 +108,19 @@ impl FileWatcher {
                 //new file
                 //calculate hash, for entry in the hashmap
                 self.hash_string(Some(path))?;
+                //store content
                 Ok(FileStatus::NewFile)
             }
         }
+    }
+
+    pub fn compare_content(
+        &mut self,
+        old_content: &String,
+        new_content: &String,
+    ) -> Result<String, Box<dyn Error>> {
+        println!("content :: {:?} :: {:?}", old_content, new_content);
+        Ok(String::from("OK!!"))
     }
 
     //create funtion to calculate the hash string
