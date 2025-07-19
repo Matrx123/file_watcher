@@ -1,3 +1,4 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::read_to_string;
@@ -19,6 +20,27 @@ pub enum FileStatus {
     NoChange,
     FileNotExist,
     NewFile,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ChangeType {
+    Added,
+    Removed,
+    Modified,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FileChanges {
+    line_no: usize,
+    message: String,
+    change_type: ChangeType,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FileChangeStatus {
+    old_content: String,
+    new_content: String,
+    change_info: Vec<FileChanges>,
 }
 
 impl FileWatcher {
@@ -55,7 +77,7 @@ impl FileWatcher {
             EventKind::Remove(RemoveKind::Folder) => println!("Folder Removed !!"),
             EventKind::Modify(ModifyKind::Data(DataChange::Content)) => {
                 let response = self.handle_content_change(event.paths[0].to_str().unwrap())?;
-                println!("\n :: File Status :: {:?}\n", response);
+                println!("\n :: File Status :: {:?}\n ", response);
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => {
                 // println!("\n :: Any event occured!! :: \n");
@@ -85,9 +107,6 @@ impl FileWatcher {
         let current_hash = self.calculate_currrent_hash(path)?;
         let new_content = read_to_string(path)?;
 
-        let binding = String::from("Content not found");
-        let prev_content = self.content_collection.get(path).unwrap_or(&binding);
-
         match self.hash_collection.get(path) {
             Some(stored_hash) => {
                 //evaluate hte store-hash with the calculated current hash
@@ -95,12 +114,20 @@ impl FileWatcher {
                     Ok(FileStatus::NoChange)
                 } else {
                     //check  old content  vs new content
-                    self.compare_content(prev_content, &new_content)?;
+
+                    if let Some(prev_content) = self.content_collection.get(path) {
+                        let result = self.check_diff(prev_content, &new_content);
+                        self.print_results(&result);
+                    }
+
                     if let Some(value) = self.hash_collection.get_mut(path) {
                         *value = current_hash
                     }
                     //check for content
                     //new content and previous from the collection
+                    if let Some(content) = self.content_collection.get_mut(path) {
+                        *content = new_content
+                    }
                     Ok(FileStatus::Modified)
                 }
             }
@@ -108,19 +135,82 @@ impl FileWatcher {
                 //new file
                 //calculate hash, for entry in the hashmap
                 self.hash_string(Some(path))?;
-                //store content
                 Ok(FileStatus::NewFile)
             }
         }
     }
 
-    pub fn compare_content(
-        &mut self,
-        old_content: &String,
-        new_content: &String,
-    ) -> Result<String, Box<dyn Error>> {
-        println!("content :: {:?} :: {:?}", old_content, new_content);
-        Ok(String::from("OK!!"))
+    pub fn print_results(&self, result: &FileChangeStatus) {
+        //TODO::remove this
+        println!("content collection :: {:?}", self.content_collection);
+        println!("\n :: CHANGES ::\n");
+        println!("::: Total changes = {:?} :::\n", result.change_info.len());
+
+        //run loop to show lines
+        for change in &result.change_info {
+            println!("Line {} :: {:?}\n", change.line_no, change.change_type);
+            println!("Content :: {:?}\n", change.message);
+        }
+
+        let added = &result
+            .change_info
+            .iter()
+            .filter(|item| item.change_type == ChangeType::Added)
+            .count();
+
+        let removed = &result
+            .change_info
+            .iter()
+            .filter(|item| item.change_type == ChangeType::Removed)
+            .count();
+
+        let modified = &result
+            .change_info
+            .iter()
+            .filter(|item| item.change_type == ChangeType::Modified)
+            .count();
+
+        println!(
+            "Added {} lines , Removed {} lines and Modified {} lines\n",
+            added, removed, modified
+        )
+    }
+
+    pub fn check_diff(&self, prev_content: &str, new_content: &str) -> FileChangeStatus {
+        let old_lines: Vec<&str> = prev_content.lines().collect();
+        let new_lines: Vec<&str> = new_content.lines().collect();
+
+        let mut changes = Vec::new();
+        let max_bound = cmp::max(old_lines.len(), new_lines.len());
+        for i in 0..max_bound {
+            match (old_lines.get(i), new_lines.get(i)) {
+                (Some(old_item), Some(new_item)) => {
+                    if old_item != new_item {
+                        changes.push(FileChanges {
+                            message: format!("--- {:?} \n +++ {:?}", old_item, new_item),
+                            line_no: i + 1,
+                            change_type: ChangeType::Modified,
+                        })
+                    }
+                }
+                (None, None) => break,
+                (None, Some(new_item)) => changes.push(FileChanges {
+                    line_no: i + 1,
+                    change_type: ChangeType::Added,
+                    message: format!("+++ {:?}\n", new_item),
+                }),
+                (Some(old_item), None) => changes.push(FileChanges {
+                    line_no: i + 1,
+                    change_type: ChangeType::Removed,
+                    message: format!("--- {:?}\n", old_item),
+                }),
+            }
+        }
+        FileChangeStatus {
+            old_content: prev_content.to_string(),
+            new_content: new_content.to_string(),
+            change_info: changes,
+        }
     }
 
     //create funtion to calculate the hash string
@@ -163,12 +253,13 @@ impl FileWatcher {
         // println!("Contents :: {:?}\n", content.trim());
 
         let mut hasher = Sha256::new();
-        hasher.update(content);
+        hasher.update(&content);
         let result = hasher.finalize();
         let hashed_content = format!("{:x}", result);
         self.hash_collection
             .insert(path.unwrap().to_string(), hashed_content);
-
+        self.content_collection
+            .insert(path.unwrap().to_string(), content);
         println!("Hash Map store :: {:?}", self.hash_collection);
 
         Ok(())
