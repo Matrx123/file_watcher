@@ -141,8 +141,6 @@ impl FileWatcher {
     }
 
     pub fn print_results(&self, result: &FileChangeStatus) {
-        //TODO::remove this
-        println!("content collection :: {:?}", self.content_collection);
         println!("\n :: CHANGES ::\n");
         println!("::: Total changes = {:?} :::\n", result.change_info.len());
 
