@@ -70,6 +70,11 @@ fn main() {
                                         }
                                     }
                                 }
+                                "PROCESS" | "process" => {
+                                    //process funtion herer
+                                    // core::process_watcher::ProcessWatcher::new().check_process();
+                                    // break;
+                                }
                                 "NETWORK" | "network" => {
                                     //do it later
                                     break;
