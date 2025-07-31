@@ -3,10 +3,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::path::PathBuf;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sysinfo::{Pid, Process, System};
 
+#[derive(Debug, Clone)]
 pub struct ProcessInfo {
     process_name: String,
     exc_path: Option<PathBuf>,
@@ -59,6 +60,8 @@ pub trait AlertHandler {
 }
 
 pub struct ConsoleAlertsHandler;
+//pub struct FileAlertHandler;
+//pub struct NotificationAlertHandler;
 
 impl AlertHandler for ConsoleAlertsHandler {
     fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>> {
@@ -67,6 +70,38 @@ impl AlertHandler for ConsoleAlertsHandler {
             alert.timestamp, alert.alert_type, alert.severity, alert.detail
         );
         Ok(())
+    }
+}
+
+pub struct ThreatDetector {
+    pub process_blocklist: HashSet<String>,
+    pub pattern_blocklist: HashSet<String>,
+    //hashes
+}
+
+impl ThreatDetector {
+    pub fn new() -> Self {
+        let mut detector = Self {
+            process_blocklist: HashSet::new(),
+            pattern_blocklist: HashSet::new(),
+        };
+
+        detector.add_blocklist("xmrig");
+        detector.add_pattern_blocklist("(?i).*mine.*");
+        detector
+    }
+
+    pub fn add_blocklist(&mut self, name: &str) {
+        self.process_blocklist.insert(name.to_string());
+    }
+
+    pub fn add_pattern_blocklist(&mut self, name: &str) {
+        self.pattern_blocklist.insert(name.to_string());
+    }
+
+    pub fn is_threat(&self, process_name: String) -> Option<String> {
+        //Some(warning)
+        None
     }
 }
 
@@ -154,6 +189,7 @@ impl ResourceMonitor {
 pub struct ProcessMonitor {
     scan_interval: Duration,
     resource_monitor: ResourceMonitor,
+    threat_detector: ThreatDetector,
     alert_handlers: Vec<Box<dyn AlertHandler>>,
     system: System,
     previous_processes: HashMap<u32, ProcessInfo>,
@@ -164,7 +200,7 @@ impl ProcessMonitor {
         let mut process_monitor = ProcessMonitor {
             scan_interval: interval,
             resource_monitor: ResourceMonitor::new(cpu_threshold, mem_threshold, bound),
-            //threat detector
+            threat_detector: ThreatDetector::new(),
             alert_handlers: Vec::new(),
             system: System::new_all(),
             previous_processes: HashMap::new(),
@@ -180,6 +216,18 @@ impl ProcessMonitor {
         for handler in &self.alert_handlers {
             if let Err(e) = handler.handle_alert(alert) {
                 eprintln!("Error occured while handling alerts :: {:?}", e);
+                let alert = Alert {
+                    severity: AlertSeverity::High,
+                    alert_type: AlertType::SystemAlert {
+                        message: format!("Error occured !!"),
+                    },
+                    detail: format!("Error occured while handling alerts :: {:?}", e),
+                    timestamp: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                };
+                self.send_alert(&alert);
             }
         }
     }
@@ -201,20 +249,48 @@ impl ProcessMonitor {
     pub fn check_process(&mut self, process_info: &ProcessInfo) {
         //check or analyze the process for threats and memory and cpu usages
         //threats, ProcessManager > Alert
-        // if error  = threat_detector(process_info) > alert
+        if is_threat  = self.threat_detector.is_threat(&process_info.process_name); 
 
         self.resource_monitor.modify_collections(process_info);
         let warnings = self.resource_monitor.check_thresholds(process_info);
         if !warnings.is_empty() {
-            //raise alert
+            let alert = Alert {
+                severity: AlertSeverity::Warning,
+                alert_type: AlertType::HighResourceUssage {
+                    pid: process_info.pid,
+                    process_name: process_info.process_name.clone(),
+                    cpu_usage: process_info.cpu_usage,
+                    mem_usage: process_info.mem_usage,
+                },
+                detail: format!("High Resource usage detected for this process!!",),
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64(),
+            };
+
+            self.send_alert(&alert);
         }
     }
 
     pub fn detect_new_process(&self, processes: &HashMap<u32, ProcessInfo>) {
-        for (pid, _) in processes {
+        for (pid, process_info) in processes {
             if !self.previous_processes.contains_key(pid) {
-                //its a new process
-                //alert terminal from here
+                let alert = Alert {
+                    severity: AlertSeverity::Info,
+                    alert_type: AlertType::NewProcessAlert {
+                        pid: *pid,
+                        process_name: process_info.process_name.clone(),
+                        details: format!("New Process has been detected !!"),
+                    },
+                    detail: format!("New Process has been detected !!"),
+                    timestamp: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                };
+                //only for logs and terminal alerts
+                self.send_alert(&alert);
             }
         }
     }
@@ -233,7 +309,6 @@ impl ProcessMonitor {
         for process_info in current_process.values() {
             self.check_process(process_info);
         }
-        //detect new processes
         self.detect_new_process(&current_process);
         //update the collections
         //clear the collection
@@ -244,12 +319,35 @@ impl ProcessMonitor {
     }
 
     pub fn monitor_processes(&mut self) {
-        println!("::: Process scanning starts :::\n");
+        println!("\n");
+        let alert = Alert {
+            severity: AlertSeverity::Info,
+            alert_type: AlertType::SystemAlert {
+                message: format!("Process Monitor !!"),
+            },
+            detail: format!("::: Process scanning starts :::"),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64(),
+        };
+        self.send_alert(&alert);
 
         loop {
             let now = Instant::now();
             if let Err(e) = self.scan_processes() {
-                println!("Error occured on scanning processes :: {:?}", e);
+                let alert = Alert {
+                    severity: AlertSeverity::High,
+                    alert_type: AlertType::SystemAlert {
+                        message: format!("Error occured!!"),
+                    },
+                    detail: format!("Error occured while scanning processes :: {:?}", e),
+                    timestamp: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                };
+                self.send_alert(&alert);
             }
             let elapsed = now.elapsed();
             if elapsed < self.scan_interval {
