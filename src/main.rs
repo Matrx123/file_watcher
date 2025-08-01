@@ -1,11 +1,14 @@
 use std::io::stdin;
 use std::path::Path;
 use std::process;
+use std::time::Duration;
 
 mod core;
 
 fn main() {
     let mut file_watcher = core::watcher::FileWatcher::new();
+    let mut process_monitor =
+        core::process_watcher::ProcessMonitor::new(Duration::new(20, 0), 90.00, 90.00, 5);
     eprintln!("Status :: {:?}", file_watcher.check_status());
     println!("::: WELCOME TO SCANGUARD :::\n\n +++ Enter the TARGET TYPE to watch!! +++ \n\n");
 
@@ -71,9 +74,8 @@ fn main() {
                                     }
                                 }
                                 "PROCESS" | "process" => {
-                                    //process funtion herer
-                                    // core::process_watcher::ProcessWatcher::new().check_process();
-                                    // break;
+                                    process_monitor.monitor_processes();
+                                    break;
                                 }
                                 "NETWORK" | "network" => {
                                     //do it later
