@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use sysinfo::{Pid, Process, System};
 
@@ -54,10 +55,12 @@ pub struct Alert {
     alert_type: AlertType,
     detail: String,
     timestamp: f64,
+    process_name: String,
 }
 
 pub trait AlertHandler {
     fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>>;
+    fn get_readable_time(&self, timestamp: f64) -> DateTime<Utc>;
 }
 
 pub struct ConsoleAlertsHandler;
@@ -65,10 +68,19 @@ pub struct ConsoleAlertsHandler;
 //pub struct NotificationAlertHandler;
 
 impl AlertHandler for ConsoleAlertsHandler {
+    fn get_readable_time(&self, timestamp: f64) -> DateTime<Utc> {
+        let seconds = timestamp as i64;
+        let nanoseconds = ((timestamp - seconds as f64) * 1_000_000_000.0) as u32;
+        DateTime::from_timestamp(seconds, nanoseconds).unwrap()
+    }
+
     fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>> {
         println!(
-            "{:?} An {:?} with severity of {:?} is there, \n details :: {:?}",
-            alert.timestamp, alert.alert_type, alert.severity, alert.detail
+            "==========\nTimeStamp :: {:?}\n Severity :: {:?}\n Process Name :: {:?}  \ndetails :: {:?}\n=============\n",
+            self.get_readable_time(alert.timestamp),
+            alert.severity,
+            alert.process_name,
+            alert.detail
         );
         Ok(())
     }
@@ -193,8 +205,6 @@ impl ResourceMonitor {
             .retain(|pid, _| !terminated_pids.contains(pid));
         self.mem_coll
             .retain(|pid, _| !terminated_pids.contains(pid));
-
-        println!("collections :: {:?} :: {:?}", self.cpu_coll, self.mem_coll)
     }
 }
 
@@ -235,6 +245,7 @@ impl ProcessMonitor {
                     },
                     detail: format!("Error occured while handling alerts :: {:?}", e),
                     timestamp: self.get_timestamp(),
+                    process_name: String::from("NA"),
                 };
                 self.send_alert(&alert);
             }
@@ -273,6 +284,7 @@ impl ProcessMonitor {
                 },
                 detail: threat,
                 timestamp: self.get_timestamp(),
+                process_name: process_info.process_name.clone(),
             };
             self.send_alert(&alert);
         }
@@ -290,6 +302,7 @@ impl ProcessMonitor {
                 },
                 detail: format!("{:?}", warnings),
                 timestamp: self.get_timestamp(),
+                process_name: process_info.process_name.clone(),
             };
 
             self.send_alert(&alert);
@@ -308,6 +321,7 @@ impl ProcessMonitor {
                     },
                     detail: format!("New Process has been detected !!"),
                     timestamp: self.get_timestamp(),
+                    process_name: process_info.process_name.clone(),
                 };
                 //only for logs and terminal alerts
                 self.send_alert(&alert);
@@ -343,6 +357,7 @@ impl ProcessMonitor {
             },
             detail: format!("::: Process scanning starts :::"),
             timestamp: self.get_timestamp(),
+            process_name: String::from("NA"),
         };
         self.send_alert(&alert);
 
@@ -356,6 +371,7 @@ impl ProcessMonitor {
                     },
                     detail: format!("Error occured while scanning processes :: {:?}", e),
                     timestamp: self.get_timestamp(),
+                    process_name: String::from("NA"),
                 };
                 self.send_alert(&alert);
             }
