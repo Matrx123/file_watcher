@@ -76,11 +76,12 @@ impl AlertHandler for ConsoleAlertsHandler {
 
     fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>> {
         println!(
-            "==========\nTimeStamp :: {:?}\n Severity :: {:?}\n Process Name :: {:?}  \ndetails :: {:?}\n=============\n",
+            "==========\nTimeStamp :: {:?}\n Severity :: {:?}\n Process Name :: {:?}  \ndetails :: {:?}\n More :: {:?}\n=============\n",
             self.get_readable_time(alert.timestamp),
             alert.severity,
             alert.process_name,
-            alert.detail
+            alert.detail,
+            alert.alert_type
         );
         Ok(())
     }

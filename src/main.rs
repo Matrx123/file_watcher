@@ -9,6 +9,7 @@ fn main() {
     let mut file_watcher = core::watcher::FileWatcher::new();
     let mut process_monitor =
         core::process_watcher::ProcessMonitor::new(Duration::new(20, 0), 90.00, 90.00, 5);
+    let network_monitor = core::network_monitor::NetworkMonitor::new();
     eprintln!("Status :: {:?}", file_watcher.check_status());
     println!("::: WELCOME TO SCANGUARD :::\n\n +++ Enter the TARGET TYPE to watch!! +++ \n\n");
 
@@ -78,7 +79,7 @@ fn main() {
                                     break;
                                 }
                                 "NETWORK" | "network" => {
-                                    //do it later
+                                    network_monitor.check_status();
                                     break;
                                 }
                                 _ => {
