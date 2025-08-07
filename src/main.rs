@@ -2,10 +2,6 @@ use std::io::stdin;
 use std::path::Path;
 use std::process;
 use std::time::Duration;
-
-use nix::libc::getuid;
-use nix::unistd;
-
 mod core;
 
 fn main() {

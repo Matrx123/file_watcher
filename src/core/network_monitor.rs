@@ -15,6 +15,42 @@ use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 
 #[derive(Debug)]
+pub enum AlertLevel {
+    HIGH,
+}
+
+#[derive(Debug)]
+pub enum AlertType {
+    SYS {
+        description: String,
+        level: AlertLevel,
+    },
+}
+
+#[derive(Debug)]
+pub struct Alert {
+    alert_level: AlertLevel,
+    alert_type: AlertType,
+}
+
+pub trait AlertHandler {
+    fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>>;
+}
+
+pub struct ConsoleAlertHandler;
+
+impl AlertHandler for ConsoleAlertHandler {
+    fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>> {
+        //log to console
+        Ok(())
+    }
+}
+
+//console
+//file ops log file
+//notifications
+
+#[derive(Debug)]
 struct PacketDetail {
     total_packets: u64,
     ipv4_packets: u64,
@@ -39,7 +75,6 @@ impl PacketDetail {
     }
 }
 
-#[derive(Debug)]
 struct DetectAttacks {
     syn_collection: HashMap<IpAddr, u32>,
     packet_collection: HashMap<IpAddr, u32>,
@@ -49,11 +84,12 @@ struct DetectAttacks {
     udp_limit: u32,
     time_limit: Duration,
     start_time_limit: Instant,
+    alert_handler: Vec<Box<dyn AlertHandler>>,
 }
 
 impl DetectAttacks {
     fn new() -> Self {
-        DetectAttacks {
+        let mut det_attacks = DetectAttacks {
             syn_collection: HashMap::new(),
             packet_collection: HashMap::new(),
             udp_collection: HashMap::new(),
@@ -62,6 +98,28 @@ impl DetectAttacks {
             udp_limit: 10000,
             time_limit: Duration::from_secs(5),
             start_time_limit: Instant::now(),
+            alert_handler: Vec::new(),
+        };
+
+        //default alert_handler
+        det_attacks
+            .alert_handler
+            .push(Box::new(ConsoleAlertHandler));
+        det_attacks
+    }
+
+    fn send_alerts(&self, alert: &Alert) {
+        for item in &self.alert_handler {
+            if let Err(e) = item.handle_alert(alert) {
+                let alert = Alert {
+                    alert_level: AlertLevel::HIGH,
+                    alert_type: AlertType::SYS {
+                        description: format!("Error in sending the Alert!! {:?}", e),
+                        level: AlertLevel::HIGH,
+                    },
+                };
+                self.send_alerts(&alert);
+            };
         }
     }
 
@@ -79,10 +137,17 @@ impl DetectAttacks {
         let udp_count = self.udp_collection.entry(ip).or_insert(0);
         *udp_count += 1;
         if *udp_count > self.udp_limit {
-            println!(
+            let alert = Alert {
+                alert_level: AlertLevel::HIGH,
+                alert_type: AlertType::SYS {
+                    description: format!(
                 "============\nUDP Flood detected from :: {:?} in time :: {:?}\n============",
                 ip, self.time_limit
-            );
+            ),
+                    level: AlertLevel::HIGH,
+                },
+            };
+            self.send_alerts(&alert);
             return true;
         }
         false
@@ -93,10 +158,17 @@ impl DetectAttacks {
         *syn_count += 1;
 
         if *syn_count > self.syn_limit {
-            println!(
+            let alert = Alert {
+                alert_level: AlertLevel::HIGH,
+                alert_type: AlertType::SYS {
+                    description: format!(
                 "============\nSyn Flood detected from :: {:?} in time :: {:?}\n============",
                 ip, self.time_limit
-            );
+            ),
+                    level: AlertLevel::HIGH,
+                },
+            };
+            self.send_alerts(&alert);
             return true;
         }
         false
@@ -107,10 +179,17 @@ impl DetectAttacks {
         *ddos_count += 1;
 
         if *ddos_count > self.ddos_limit {
-            println!(
-                "Ddos Attack detected by IP :: {:?} in time :: {:?}",
-                ip, self.time_limit
-            );
+            let alert = Alert {
+                alert_level: AlertLevel::HIGH,
+                alert_type: AlertType::SYS {
+                    description: format!(
+                        "Ddos Attack detected by IP :: {:?} in time :: {:?}",
+                        ip, self.time_limit
+                    ),
+                    level: AlertLevel::HIGH,
+                },
+            };
+            self.send_alerts(&alert);
             return true;
         }
         false
@@ -163,7 +242,7 @@ impl NetworkMonitor {
         Ok(())
     }
 
-    pub fn process_udp_packet(&self, udp: &UdpPacket, ip: IpAddr) {
+    pub fn process_udp_packet(&self, ip: IpAddr) {
         let mut stats = self.packet_stats.lock().unwrap();
         stats.udp_packets += 1;
         drop(stats);
@@ -175,7 +254,6 @@ impl NetworkMonitor {
     pub fn process_tcp_packet(&self, tcp: &TcpPacket, ip: IpAddr) {
         let mut stats = self.packet_stats.lock().unwrap();
         stats.tcp_packets += 1;
-
 
         if tcp.get_flags() & TcpFlags::SYN != 0 && tcp.get_flags() & TcpFlags::ACK == 0 {
             stats.syn_packets += 1;
@@ -209,8 +287,8 @@ impl NetworkMonitor {
                 }
             }
             IpNextHeaderProtocols::Udp => {
-                if let Some(udp) = UdpPacket::new(ipv6.payload()) {
-                    self.process_udp_packet(&udp, ip_addr);
+                if let Some(_udp) = UdpPacket::new(ipv6.payload()) {
+                    self.process_udp_packet(ip_addr);
                 }
             }
             _ => {}
@@ -242,8 +320,8 @@ impl NetworkMonitor {
                 }
             }
             IpNextHeaderProtocols::Udp => {
-                if let Some(udp) = UdpPacket::new(ipv4.payload()) {
-                    self.process_udp_packet(&udp, ip_addr);
+                if let Some(_udp) = UdpPacket::new(ipv4.payload()) {
+                    self.process_udp_packet(ip_addr);
                 }
             }
             _ => {}
@@ -294,8 +372,11 @@ impl NetworkMonitor {
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(5));
             let stats = cloned_stat.lock().unwrap();
-            println!(
-                "\n Statistics from last 5 Seconds :: \n\
+            let alert = Alert {
+                alert_level: AlertLevel::HIGH,
+                alert_type: AlertType::SYS {
+                    description: format!(
+                        "\n Statistics from last 5 Seconds :: \n\
                 Total Packets :: {}\n\
                 IPV4 Packets :: {}\n\
                 IPV6 Packets :: {}\n\
@@ -304,14 +385,17 @@ impl NetworkMonitor {
                 SYN Packets :: {}\n\
                 {}\n 
                 ",
-                stats.total_packets,
-                stats.ipv4_packets,
-                stats.ipv6_packets,
-                stats.tcp_packets,
-                stats.udp_packets,
-                stats.syn_packets,
-                "--".repeat(30)
-            );
+                        stats.total_packets,
+                        stats.ipv4_packets,
+                        stats.ipv6_packets,
+                        stats.tcp_packets,
+                        stats.udp_packets,
+                        stats.syn_packets,
+                        "--".repeat(30)
+                    ),
+                    level: AlertLevel::HIGH,
+                },
+            };
         });
     }
 }
