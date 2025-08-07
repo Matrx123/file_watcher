@@ -57,10 +57,10 @@ impl DetectAttacks {
             syn_collection: HashMap::new(),
             packet_collection: HashMap::new(),
             udp_collection: HashMap::new(),
-            syn_limit: 600,
-            ddos_limit: 50,
-            udp_limit: 50,
-            time_limit: Duration::from_secs(7),
+            syn_limit: 10000,
+            ddos_limit: 10000,
+            udp_limit: 10000,
+            time_limit: Duration::from_secs(5),
             start_time_limit: Instant::now(),
         }
     }
@@ -80,7 +80,7 @@ impl DetectAttacks {
         *udp_count += 1;
         if *udp_count > self.udp_limit {
             println!(
-                "============\nSyn Flood detected from :: {:?} in time :: {:?}\n============",
+                "============\nUDP Flood detected from :: {:?} in time :: {:?}\n============",
                 ip, self.time_limit
             );
             return true;
@@ -175,6 +175,7 @@ impl NetworkMonitor {
     pub fn process_tcp_packet(&self, tcp: &TcpPacket, ip: IpAddr) {
         let mut stats = self.packet_stats.lock().unwrap();
         stats.tcp_packets += 1;
+
 
         if tcp.get_flags() & TcpFlags::SYN != 0 && tcp.get_flags() & TcpFlags::ACK == 0 {
             stats.syn_packets += 1;
@@ -291,10 +292,10 @@ impl NetworkMonitor {
         let cloned_stat = Arc::clone(&self.packet_stats);
 
         thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(7));
+            thread::sleep(Duration::from_secs(5));
             let stats = cloned_stat.lock().unwrap();
             println!(
-                "\n Statistics from last 7 Seconds :: \n\
+                "\n Statistics from last 5 Seconds :: \n\
                 Total Packets :: {}\n\
                 IPV4 Packets :: {}\n\
                 IPV6 Packets :: {}\n\

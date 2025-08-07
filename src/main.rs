@@ -3,6 +3,9 @@ use std::path::Path;
 use std::process;
 use std::time::Duration;
 
+use nix::libc::getuid;
+use nix::unistd;
+
 mod core;
 
 fn main() {
@@ -79,6 +82,11 @@ fn main() {
                                     break;
                                 }
                                 "NETWORK" | "network" => {
+                                    // let uid = getuid();
+                                    // if !uid {
+                                    //     std::process::exit(1);
+                                    // }
+                                    // network_monitor.show_alerts();
                                     network_monitor.start_scanning_network().unwrap();
                                     break;
                                 }
