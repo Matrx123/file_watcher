@@ -79,7 +79,7 @@ fn main() {
                                     break;
                                 }
                                 "NETWORK" | "network" => {
-                                    network_monitor.check_status();
+                                    network_monitor.start_scanning_network().unwrap();
                                     break;
                                 }
                                 _ => {
