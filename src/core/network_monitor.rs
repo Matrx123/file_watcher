@@ -17,7 +17,6 @@ use pnet::packet::Packet;
 #[derive(Debug)]
 pub enum AlertLevel {
     HIGH,
-    INFO,
 }
 
 #[derive(Debug)]
@@ -32,7 +31,7 @@ pub struct Alert {
     description: String,
 }
 
-pub trait AlertHandler {
+pub trait AlertHandler: Send + Sync {
     fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>>;
 }
 
@@ -95,10 +94,10 @@ impl DetectAttacks {
             syn_collection: HashMap::new(),
             packet_collection: HashMap::new(),
             udp_collection: HashMap::new(),
-            syn_limit: 1,
-            ddos_limit: 100,
-            udp_limit: 100,
-            time_limit: Duration::from_secs(5),
+            syn_limit: 1000,
+            ddos_limit: 10000,
+            udp_limit: 10000,
+            time_limit: Duration::from_secs(10),
             start_time_limit: Instant::now(),
             alert_handler: Vec::new(),
         };
@@ -193,20 +192,16 @@ impl DetectAttacks {
 pub struct NetworkMonitor {
     packet_stats: Arc<Mutex<PacketDetail>>,
     detect_attack: Arc<Mutex<DetectAttacks>>,
-    alert_handler: Vec<Arc<Mutex<Box<dyn AlertHandler>>>>,
+    alert_handler: Vec<Arc<Box<dyn AlertHandler>>>,
 }
 
 impl NetworkMonitor {
     pub fn new() -> Self {
-        let mut net_mon = NetworkMonitor {
+        NetworkMonitor {
             packet_stats: Arc::new(Mutex::new(PacketDetail::new())),
             detect_attack: Arc::new(Mutex::new(DetectAttacks::new())),
-            alert_handler: Vec::new(),
-        };
-        net_mon
-            .alert_handler
-            .push(Arc::new(Mutex::new(Box::new(ConsoleAlertHandler))));
-        net_mon
+            alert_handler: vec![Arc::new(Box::new(ConsoleAlertHandler))],
+        }
     }
 
     //interfaces > processed hte packets > processed the tcp/udp protocols > data
@@ -366,27 +361,15 @@ impl NetworkMonitor {
         }
     }
 
-    fn send_alerts(&self, alert: &Alert) {
-        for item in &self.alert_handler {
-            if let Err(e) = item.handle_alert(alert) {
-                let alert = Alert {
-                    alert_level: AlertLevel::HIGH,
-                    alert_type: AlertType::SYS,
-                    description: format!("Error in sending the Alert!! {:?}", e),
-                };
-                self.send_alerts(&alert);
-            };
-        }
-    }
-
     pub fn show_alerts(&self) {
         let cloned_stat = Arc::clone(&self.packet_stats);
-
+        let cloned_alert_handler = self.alert_handler.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(5));
             let stats = cloned_stat.lock().unwrap();
+
             let alert = Alert {
-                alert_level: AlertLevel::INFO,
+                alert_level: AlertLevel::HIGH,
                 alert_type: AlertType::SYS,
                 description: format!(
                     "\n Statistics from last 5 Seconds :: \n\
@@ -396,7 +379,7 @@ impl NetworkMonitor {
                 TCP Packets :: {}\n\
                 UDP Packets :: {}\n\
                 SYN Packets :: {}\n\
-                {}\n 
+                {}\n
                 ",
                     stats.total_packets,
                     stats.ipv4_packets,
@@ -407,7 +390,13 @@ impl NetworkMonitor {
                     "--".repeat(30)
                 ),
             };
-            //send alert from here
+
+            for item in &cloned_alert_handler {
+                if let Err(e) = item.handle_alert(&alert) {
+                    //raise an alert
+                    eprintln!("Error is here!!!! : {:?}", e);
+                }
+            }
         });
     }
 }
