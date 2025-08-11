@@ -11,3 +11,6 @@ pnet = "0.35.0"
 regex = "1.11.1"
 sha2 = "0.10.9"
 sysinfo = "0.36.1"
+tokio = {version = "1.47.1", features = [
+  "time", "full", "macros", "sync", "rt-multi-thread", "net", "fs"
+]} 
