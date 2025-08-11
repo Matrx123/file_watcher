@@ -4,9 +4,10 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pnet::datalink::{interfaces, NetworkInterface};
+use pnet::datalink::Channel::Ethernet;
+use pnet::datalink::{self, interfaces, NetworkInterface};
 use tokio::sync::mpsc;
-use tokio::try_join;
+use tokio::{task, try_join};
 
 pub struct PacketDetails {
     total_packets: u64,
@@ -136,7 +137,31 @@ impl AsyncNetworkMon {
             .find(|iface| iface.name == "en0" && iface.is_up() && !iface.is_loopback())
     }
 
-    // pub async fn capture_packets(interface: NetworkInterface, sender: mpsc::UnboundedSender<>)
+    pub async fn capture_packets(
+        interface: NetworkInterface,
+        sender: mpsc::UnboundedSender<Vec<u8>>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        task::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
+            let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
+                Ok(Ethernet(tx, rx)) => (tx, rx),
+                Ok(_) => return Err("Unhandled channel type.".into()),
+                Err(e) => return Err(format!("An error occurred: {}", e).into()),
+            };
+
+            loop {
+                match rx.next() {
+                    Ok(packet) => sender.send(packet),
+                    Err(e) => {
+                        eprintln!("Error in receiving packets !! {}", e);
+                        break;
+                    }
+                };
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
 
     pub async fn start_network_monitor(
         &self,
@@ -151,4 +176,3 @@ impl AsyncNetworkMon {
         Ok(())
     }
 }
-
