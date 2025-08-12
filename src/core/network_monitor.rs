@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pnet::datalink::Channel::Ethernet;
@@ -14,6 +14,8 @@ use pnet::packet::tcp::{TcpFlags, TcpPacket};
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::Mutex;
+use tokio::time::interval;
 use tokio::{task, try_join};
 
 pub struct PacketDetails {
@@ -21,7 +23,7 @@ pub struct PacketDetails {
     ipv4_packets: u64,
     ipv6_packets: u64,
     tcp_packets: u64,
-    upd_packets: u64,
+    udp_packets: u64,
     syn_packets: u64,
     last_update: Instant,
 }
@@ -33,7 +35,7 @@ impl PacketDetails {
             ipv4_packets: 0,
             ipv6_packets: 0,
             tcp_packets: 0,
-            upd_packets: 0,
+            udp_packets: 0,
             syn_packets: 0,
             last_update: Instant::now(),
         }
@@ -180,7 +182,7 @@ impl AsyncNetworkMon {
             }
             Ok(())
         })
-        .await?;
+        .await??;
         Ok(())
     }
 
@@ -270,7 +272,6 @@ impl AsyncNetworkMon {
         while let Some(events) = receiver.recv().await {
             match events {
                 ChannelItems::PacketReceived(packet) => {
-                    //parse it
                     if let Some(processed_packet) = self.parse_packet(packet).await {
                         self.update_and_check_for_attacks(processed_packet).await;
                     }
@@ -284,9 +285,74 @@ impl AsyncNetworkMon {
 
     pub async fn update_and_check_for_attacks(&self, processed: ProcessedPacket) {
         {
-            let mut stats = self.packet_stats.lock();
+            let mut stats = self.packet_stats.lock().await;
             stats.total_packets += 1;
             stats.last_update = Instant::now();
+
+            match &processed.packet_type {
+                PacketType::Ipv4Tcp { is_syn } => {
+                    stats.tcp_packets += 1;
+                    stats.ipv4_packets += 1;
+                    if *is_syn {
+                        stats.syn_packets += 1;
+                    }
+                }
+                PacketType::Ipv4Udp => {
+                    stats.udp_packets += 1;
+                    stats.ipv4_packets += 1;
+                }
+                PacketType::Ipv6Tcp { is_syn } => {
+                    stats.tcp_packets += 1;
+                    stats.ipv6_packets += 1;
+                    if *is_syn {
+                        stats.syn_packets += 1;
+                    }
+                }
+                PacketType::Ipv6Udp => {
+                    stats.ipv6_packets += 1;
+                    stats.udp_packets += 1;
+                }
+                PacketType::Other => {}
+            }
+        }
+        {
+            let mut detector = self.detect_attacks.lock().await;
+            detector.check_ddos(processed.src_ip).await;
+            match &processed.packet_type {
+                PacketType::Ipv4Tcp { is_syn: true } | PacketType::Ipv6Tcp { is_syn: true } => {
+                    detector.check_syn_flood(processed.src_ip).await;
+                }
+                PacketType::Ipv6Udp | PacketType::Ipv4Udp => {
+                    detector.check_udp_flood(processed.src_ip).await;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub async fn display_stats(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut interval = interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let stats = self.packet_stats.lock().await;
+            println!(
+                "\n Statistics from last 5 Seconds :: \n\
+                Total Packets :: {}\n\
+                IPV4 Packets :: {}\n\
+                IPV6 Packets :: {}\n\
+                TCP Packets :: {}\n\
+                UDP Packets :: {}\n\
+                SYN Packets :: {}\n\
+                {}\n
+                ",
+                stats.total_packets,
+                stats.ipv4_packets,
+                stats.ipv6_packets,
+                stats.tcp_packets,
+                stats.udp_packets,
+                stats.syn_packets,
+                "--".repeat(30)
+            )
         }
     }
 
@@ -298,8 +364,20 @@ impl AsyncNetworkMon {
         try_join!(
             self.capture_packets(interface, sender),
             self.process_packet(receiver),
-            // self.display_stats()
+            self.display_stats()
         )?;
+        Ok(())
+    }
+
+    pub async fn start_scanning(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        println!(":::: Network Scanning started!! ::::");
+        let monitor = AsyncNetworkMon::new();
+
+        let interface = AsyncNetworkMon::get_interface()
+            .ok_or("No inteface found!!!")
+            .unwrap();
+
+        monitor.start_network_monitor(interface).await?;
         Ok(())
     }
 }

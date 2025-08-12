@@ -1,7 +1,5 @@
 use std::io::stdin;
-use std::path::Path;
 use std::process;
-use std::time::Duration;
 mod core;
 
 #[tokio::main]
@@ -9,7 +7,7 @@ async fn main() {
     // let mut file_watcher = core::watcher::FileWatcher::new();
     // let mut process_monitor =
     //     core::process_watcher::ProcessMonitor::new(Duration::new(20, 0), 90.00, 90.00, 5);
-    let network_monitor = core::network_monitor::NetworkMonitor::new();
+    let network_monitor = core::network_monitor::AsyncNetworkMon::new();
     // eprintln!("Status :: {:?}", file_watcher.check_status());
     println!("::: WELCOME TO SCANGUARD :::\n\n +++ Enter the TARGET TYPE to watch!! +++ \n\n");
 
@@ -85,6 +83,7 @@ async fn main() {
                                     // }
                                     // network_monitor.show_alerts();
                                     // network_monitor.start_scanning_network().unwrap();
+                                    network_monitor.start_scanning().await.unwrap();
                                     break;
                                 }
                                 _ => {
