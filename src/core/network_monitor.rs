@@ -6,7 +6,14 @@ use std::time::{Duration, Instant};
 
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, interfaces, NetworkInterface};
-use tokio::sync::mpsc;
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::ipv6::Ipv6Packet;
+use pnet::packet::tcp::{TcpFlags, TcpPacket};
+use pnet::packet::udp::UdpPacket;
+use pnet::packet::Packet;
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::{task, try_join};
 
 pub struct PacketDetails {
@@ -103,6 +110,13 @@ impl AttackDetector {
 }
 
 #[derive(Debug)]
+pub enum ChannelItems {
+    PacketReceived(Vec<u8>),
+    ShareStats,
+    TurnOff,
+}
+
+#[derive(Debug)]
 pub struct ProcessedPacket {
     src_ip: IpAddr,
     packet_type: PacketType,
@@ -110,13 +124,14 @@ pub struct ProcessedPacket {
 
 #[derive(Debug)]
 enum PacketType {
-    Ipv4Tcp,
+    Ipv4Tcp { is_syn: bool },
     Ipv4Udp,
-    Ipv6Tcp,
+    Ipv6Tcp { is_syn: bool },
     Ipv6Udp,
     Other,
 }
 
+#[derive(Clone)]
 pub struct AsyncNetworkMon {
     packet_stats: Arc<Mutex<PacketDetails>>,
     detect_attacks: Arc<Mutex<AttackDetector>>,
@@ -138,8 +153,9 @@ impl AsyncNetworkMon {
     }
 
     pub async fn capture_packets(
+        &self,
         interface: NetworkInterface,
-        sender: mpsc::UnboundedSender<Vec<u8>>,
+        sender: mpsc::UnboundedSender<ChannelItems>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         task::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
             let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
@@ -150,7 +166,12 @@ impl AsyncNetworkMon {
 
             loop {
                 match rx.next() {
-                    Ok(packet) => sender.send(packet),
+                    Ok(packet) => {
+                        if let Err(e) = sender.send(ChannelItems::PacketReceived(packet.to_vec())) {
+                            eprintln!("Failed to send packets for processing :: {:?}", e);
+                            break;
+                        }
+                    }
                     Err(e) => {
                         eprintln!("Error in receiving packets !! {}", e);
                         break;
@@ -163,15 +184,121 @@ impl AsyncNetworkMon {
         Ok(())
     }
 
+    pub async fn parse_packet(&self, packet: Vec<u8>) -> Option<ProcessedPacket> {
+        if let Some(ethernet_packet) = EthernetPacket::new(&packet) {
+            match ethernet_packet.get_ethertype() {
+                EtherTypes::Ipv4 => {
+                    if let Some(ipv4) = Ipv4Packet::new(ethernet_packet.payload()) {
+                        return self.parse_ipv4_packets(&ipv4).await;
+                    }
+                }
+                EtherTypes::Ipv6 => {
+                    if let Some(ipv6) = Ipv6Packet::new(ethernet_packet.payload()) {
+                        return self.parse_ipv6_packets(&ipv6).await;
+                    }
+                }
+                _ => {}
+            }
+        };
+        None
+    }
+
+    pub async fn parse_ipv6_packets(&self, ipv6: &Ipv6Packet<'_>) -> Option<ProcessedPacket> {
+        let ip_addr = IpAddr::V6(ipv6.get_source());
+        match ipv6.get_next_header() {
+            IpNextHeaderProtocols::Tcp => {
+                if let Some(tcp) = TcpPacket::new(ipv6.payload()) {
+                    let is_syn = tcp.get_flags() & TcpFlags::SYN != 0
+                        && tcp.get_flags() & TcpFlags::ACK == 0;
+                    return Some(ProcessedPacket {
+                        src_ip: ip_addr,
+                        packet_type: PacketType::Ipv6Tcp { is_syn },
+                    });
+                }
+            }
+
+            IpNextHeaderProtocols::Udp => {
+                if let Some(_udp) = UdpPacket::new(ipv6.payload()) {
+                    return Some(ProcessedPacket {
+                        src_ip: ip_addr,
+                        packet_type: PacketType::Ipv6Udp,
+                    });
+                }
+            }
+
+            _ => {}
+        }
+        Some(ProcessedPacket {
+            src_ip: ip_addr,
+            packet_type: PacketType::Other,
+        })
+    }
+
+    pub async fn parse_ipv4_packets(&self, ipv4: &Ipv4Packet<'_>) -> Option<ProcessedPacket> {
+        let ip_addr = IpAddr::V4(ipv4.get_source());
+        match ipv4.get_next_level_protocol() {
+            IpNextHeaderProtocols::Tcp => {
+                if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
+                    let is_syn = tcp.get_flags() & TcpFlags::SYN != 0
+                        && tcp.get_flags() & TcpFlags::ACK == 0;
+                    return Some(ProcessedPacket {
+                        src_ip: ip_addr,
+                        packet_type: PacketType::Ipv4Tcp { is_syn },
+                    });
+                }
+            }
+            IpNextHeaderProtocols::Udp => {
+                if let Some(_udp) = UdpPacket::new(ipv4.payload()) {
+                    return Some(ProcessedPacket {
+                        src_ip: ip_addr,
+                        packet_type: PacketType::Ipv4Udp,
+                    });
+                }
+            }
+            _ => {}
+        }
+        Some(ProcessedPacket {
+            src_ip: ip_addr,
+            packet_type: PacketType::Other,
+        })
+    }
+
+    pub async fn process_packet(
+        &self,
+        mut receiver: UnboundedReceiver<ChannelItems>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        while let Some(events) = receiver.recv().await {
+            match events {
+                ChannelItems::PacketReceived(packet) => {
+                    //parse it
+                    if let Some(processed_packet) = self.parse_packet(packet).await {
+                        self.update_and_check_for_attacks(processed_packet).await;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_and_check_for_attacks(&self, processed: ProcessedPacket) {
+        {
+            let mut stats = self.packet_stats.lock();
+            stats.total_packets += 1;
+            stats.last_update = Instant::now();
+        }
+    }
+
     pub async fn start_network_monitor(
         &self,
         interface: NetworkInterface,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let (sender, receiver) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (sender, receiver) = mpsc::unbounded_channel::<ChannelItems>();
         try_join!(
             self.capture_packets(interface, sender),
             self.process_packet(receiver),
-            self.display_stats()
+            // self.display_stats()
         )?;
         Ok(())
     }
