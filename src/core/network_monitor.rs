@@ -55,9 +55,9 @@ pub struct AttackDetector {
 impl AttackDetector {
     pub fn new() -> Self {
         Self {
-            syn_limit: 50,
-            ddos_limit: 5,
-            udp_limit: 50,
+            syn_limit: 10000,
+            ddos_limit: 10000,
+            udp_limit: 10000,
             time_window: Duration::from_secs(7),
             syn_collection: HashMap::new(),
             udp_collection: HashMap::new(),
@@ -317,6 +317,11 @@ impl AsyncNetworkMon {
         }
         {
             let mut detector = self.detect_attacks.lock().await;
+
+            if detector.should_reset() {
+                detector.reset_values();
+            }
+
             detector.check_ddos(processed.src_ip).await;
             match &processed.packet_type {
                 PacketType::Ipv4Tcp { is_syn: true } | PacketType::Ipv6Tcp { is_syn: true } => {
