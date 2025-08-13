@@ -1,6 +1,8 @@
 use core::f64;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -75,14 +77,23 @@ impl AlertHandler for ConsoleAlertsHandler {
     }
 
     fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>> {
-        println!(
+        let time = self.get_readable_time(alert.timestamp);
+        let log=format!(
             "==========\nTimeStamp :: {:?}\n Severity :: {:?}\n Process Name :: {:?}  \ndetails :: {:?}\n More :: {:?}\n=============\n",
-            self.get_readable_time(alert.timestamp),
+            time,
             alert.severity,
             alert.process_name,
             alert.detail,
             alert.alert_type
         );
+        println!("{log}");
+        let mut f = File::options()
+            .append(true)
+            .create(true)
+            .open("process.log")?;
+        writeln!(&mut f, "{log}")?;
+        f.sync_all()?;
+
         Ok(())
     }
 }
@@ -248,6 +259,7 @@ impl ProcessMonitor {
                     timestamp: self.get_timestamp(),
                     process_name: String::from("NA"),
                 };
+
                 self.send_alert(&alert);
             }
         }
