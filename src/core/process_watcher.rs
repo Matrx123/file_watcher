@@ -4,12 +4,64 @@ use std::error::Error;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use sysinfo::{Pid, Process, System};
+
+const BUFFER_SIZE:i32=30;
+
+fn start_buffered_logger(rx: mpsc::Receiver<String>, filename: String) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut log_file = match File::options()
+            .append(true)
+            .create(true)
+            .open(&filename) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("Failed to open log file {}: {:?}", filename, e);
+                return;
+            }
+        };
+        
+        let mut log_buffer = Vec::new();
+        let buffer_size = BUFFER_SIZE as usize;
+        
+        // Continuously receive logs and write them to file
+        for log in rx {
+            log_buffer.push(log);
+            
+            // Flush when buffer is full (15 logs)
+            if log_buffer.len() >= buffer_size {
+                for buffered_log in &log_buffer {
+                    if let Err(e) = writeln!(&mut log_file, "{}", buffered_log) {
+                        eprintln!("Failed to write to log file {}: {:?}", filename, e);
+                    }
+                }
+                // Flush after writing all buffered logs
+                if let Err(e) = log_file.flush() {
+                    eprintln!("Failed to flush log file {}: {:?}", filename, e);
+                }
+                log_buffer.clear();
+            }
+        }
+        
+        // Flush any remaining logs in buffer when channel closes
+        if !log_buffer.is_empty() {
+            for buffered_log in &log_buffer {
+                if let Err(e) = writeln!(&mut log_file, "{}", buffered_log) {
+                    eprintln!("Failed to write to log file {}: {:?}", filename, e);
+                }
+            }
+            if let Err(e) = log_file.flush() {
+                eprintln!("Failed to flush log file {}: {:?}", filename, e);
+            }
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -61,7 +113,7 @@ pub struct Alert {
 }
 
 pub trait AlertHandler {
-    fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>>;
+    fn handle_alert(&self, alert: &Alert, tx: mpsc::Sender<String>) -> Result<(), Box<dyn Error>>;
     fn get_readable_time(&self, timestamp: f64) -> DateTime<Utc>;
 }
 
@@ -76,9 +128,9 @@ impl AlertHandler for ConsoleAlertsHandler {
         DateTime::from_timestamp(seconds, nanoseconds).unwrap()
     }
 
-    fn handle_alert(&self, alert: &Alert) -> Result<(), Box<dyn Error>> {
+    fn handle_alert(&self, alert: &Alert, tx: mpsc::Sender<String>) -> Result<(), Box<dyn Error>> {
         let time = self.get_readable_time(alert.timestamp);
-        let log=format!(
+        let log = format!(
             "==========\nTimeStamp :: {:?}\n Severity :: {:?}\n Process Name :: {:?}  \ndetails :: {:?}\n More :: {:?}\n=============\n",
             time,
             alert.severity,
@@ -86,13 +138,14 @@ impl AlertHandler for ConsoleAlertsHandler {
             alert.detail,
             alert.alert_type
         );
+        
+        // Console output (non-blocking)
         println!("{log}");
-        let mut f = File::options()
-            .append(true)
-            .create(true)
-            .open("process.log")?;
-        writeln!(&mut f, "{log}")?;
-        f.sync_all()?;
+        
+        // Send log to channel for parallel file writing (non-blocking)
+        if let Err(e) = tx.send(log.clone()) {
+            eprintln!("Failed to send log to file writer: {:?}", e);
+        }
 
         Ok(())
     }
@@ -247,15 +300,22 @@ impl ProcessMonitor {
     }
 
     pub fn send_alert(&self, alert: &Alert) {
+        // Create a channel for sending logs to the file writer thread
+        let (tx, rx) = mpsc::channel();
+        
+        // Spawn a seperate thread for file logging
+        let _file_writer_thread = start_buffered_logger(rx, "process.log".to_string());
+        
+        // Send alert to all handlers (non-blocking)
         for handler in &self.alert_handlers {
-            if let Err(e) = handler.handle_alert(alert) {
-                eprintln!("Error occured while handling alerts :: {:?}", e);
+            if let Err(e) = handler.handle_alert(alert, tx.clone()) {
+                eprintln!("Error occurred while handling alerts :: {:?}", e);
                 let alert = Alert {
                     severity: AlertSeverity::High,
                     alert_type: AlertType::SystemAlert {
-                        message: format!("Error occured !!"),
+                        message: format!("Error occurred !!"),
                     },
-                    detail: format!("Error occured while handling alerts :: {:?}", e),
+                    detail: format!("Error occurred while handling alerts :: {:?}", e),
                     timestamp: self.get_timestamp(),
                     process_name: String::from("NA"),
                 };
@@ -263,6 +323,9 @@ impl ProcessMonitor {
                 self.send_alert(&alert);
             }
         }
+        
+        // Note: The file_writer_thread will continue running and processing logs
+        // even after this function returns. It will be cleaned up when the main program exits.
     }
 
     pub fn add_alert_handlers(&mut self, alert_handler: Box<dyn AlertHandler>) {
