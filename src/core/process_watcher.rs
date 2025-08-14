@@ -5,35 +5,35 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::thread::sleep;
+use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use sysinfo::{Pid, Process, System};
 
-const BUFFER_SIZE:i32=30;
+const BUFFER_SIZE: usize = 30;
 
-fn start_buffered_logger(rx: mpsc::Receiver<String>, filename: String) -> std::thread::JoinHandle<()> {
+fn start_buffered_logger(
+    rx: mpsc::Receiver<String>,
+    filename: String,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut log_file = match File::options()
-            .append(true)
-            .create(true)
-            .open(&filename) {
+        let mut log_file = match File::options().append(true).create(true).open(&filename) {
             Ok(file) => file,
             Err(e) => {
                 eprintln!("Failed to open log file {}: {:?}", filename, e);
                 return;
             }
         };
-        
+
         let mut log_buffer = Vec::new();
         let buffer_size = BUFFER_SIZE as usize;
-        
+
         // Continuously receive logs and write them to file
         for log in rx {
             log_buffer.push(log);
-            
+
             // Flush when buffer is full (15 logs)
             if log_buffer.len() >= buffer_size {
                 for buffered_log in &log_buffer {
@@ -48,7 +48,7 @@ fn start_buffered_logger(rx: mpsc::Receiver<String>, filename: String) -> std::t
                 log_buffer.clear();
             }
         }
-        
+
         // Flush any remaining logs in buffer when channel closes
         if !log_buffer.is_empty() {
             for buffered_log in &log_buffer {
@@ -63,6 +63,17 @@ fn start_buffered_logger(rx: mpsc::Receiver<String>, filename: String) -> std::t
     })
 }
 
+impl Drop for ProcessMonitor {
+    fn drop(&mut self) {
+        // The log_tx will be dropped automatically, closing the channel
+        // and signaling the logging thread to stop
+
+        // Take ownership of the thread handle and join
+        if let Some(handle) = self.log_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     process_name: String,
@@ -138,10 +149,10 @@ impl AlertHandler for ConsoleAlertsHandler {
             alert.detail,
             alert.alert_type
         );
-        
+
         // Console output (non-blocking)
         println!("{log}");
-        
+
         // Send log to channel for parallel file writing (non-blocking)
         if let Err(e) = tx.send(log.clone()) {
             eprintln!("Failed to send log to file writer: {:?}", e);
@@ -280,10 +291,18 @@ pub struct ProcessMonitor {
     alert_handlers: Vec<Box<dyn AlertHandler>>,
     system: System,
     previous_processes: HashMap<u32, ProcessInfo>,
+    log_tx: mpsc::Sender<String>,
+    // Wrapping a thread handle in Option so that it can be closed while implementing the Drop
+    // trait and `.join()` takes the ownership of the thread
+    log_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ProcessMonitor {
     pub fn new(interval: Duration, cpu_threshold: f32, mem_threshold: f64, bound: usize) -> Self {
+        let (log_tx, log_rx) = mpsc::channel::<String>();
+        let log_thread: Option<JoinHandle<()>> =
+            Some(start_buffered_logger(log_rx, "process.log".into()));
+
         let mut process_monitor = ProcessMonitor {
             scan_interval: interval,
             resource_monitor: ResourceMonitor::new(cpu_threshold, mem_threshold, bound),
@@ -291,6 +310,8 @@ impl ProcessMonitor {
             alert_handlers: Vec::new(),
             system: System::new_all(),
             previous_processes: HashMap::new(),
+            log_tx,
+            log_thread,
         };
 
         process_monitor.add_alert_handlers(Box::new(ConsoleAlertsHandler));
@@ -300,15 +321,9 @@ impl ProcessMonitor {
     }
 
     pub fn send_alert(&self, alert: &Alert) {
-        // Create a channel for sending logs to the file writer thread
-        let (tx, rx) = mpsc::channel();
-        
-        // Spawn a seperate thread for file logging
-        let _file_writer_thread = start_buffered_logger(rx, "process.log".to_string());
-        
         // Send alert to all handlers (non-blocking)
         for handler in &self.alert_handlers {
-            if let Err(e) = handler.handle_alert(alert, tx.clone()) {
+            if let Err(e) = handler.handle_alert(alert, self.log_tx.clone()) {
                 eprintln!("Error occurred while handling alerts :: {:?}", e);
                 let alert = Alert {
                     severity: AlertSeverity::High,
@@ -323,7 +338,7 @@ impl ProcessMonitor {
                 self.send_alert(&alert);
             }
         }
-        
+
         // Note: The file_writer_thread will continue running and processing logs
         // even after this function returns. It will be cleaned up when the main program exits.
     }
